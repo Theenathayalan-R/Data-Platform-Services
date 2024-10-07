@@ -1,0 +1,37 @@
+
+from pyspark.sql import SparkSession
+from pyspark.sql import Row
+
+# Create Spark session with Deequ jar
+spark = SparkSession.builder \
+    .appName("DeequExample") \
+    .config("spark.jars", "/path/to/deequ-1.2.2-spark-3.1.jar") \
+    .getOrCreate()
+
+# Sample DataFrame
+data = [Row(name="Alice", age=25), Row(name="Bob", age=30), Row(name=None, age=None)]
+df = spark.createDataFrame(data)
+
+# Import Java Deequ classes via Py4J
+from py4j.java_gateway import java_import
+java_import(spark._jvm, "com.amazon.deequ.*")
+java_import(spark._jvm, "com.amazon.deequ.verification.*")
+java_import(spark._jvm, "com.amazon.deequ.checks.*")
+
+# Initialize Deequ's VerificationSuite and Check
+VerificationSuite = spark._jvm.com.amazon.deequ.verification.VerificationSuite
+Check = spark._jvm.com.amazon.deequ.checks.Check
+CheckLevel = spark._jvm.com.amazon.deequ.checks.CheckLevel
+
+# Create a check (e.g., check completeness of 'name' column)
+check = Check(CheckLevel.Error(), "Data validation check").isComplete("name")
+
+# Run the check using the VerificationSuite
+result = VerificationSuite().onData(df._jdf).addCheck(check).run()
+
+# Convert the result to a DataFrame for easier access in PySpark
+VerificationResult = spark._jvm.com.amazon.deequ.verification.VerificationResult
+result_df = VerificationResult.checkResultsAsDataFrame(spark._jvm, result)
+
+# Show results
+result_df.show()
