@@ -1,0 +1,205 @@
+Detailed Design Document for Data Ingestion Framework
+
+1. Overview
+
+The Data Ingestion Framework is designed to ingest data from Oracle databases into an S3 bucket using Apache Iceberg for efficient data management. This framework incorporates pre-ingestion and post-ingestion validations, logging, error handling, and self-healing mechanisms to ensure robust data quality and reliability.
+
+1.1 Objectives
+Ingest data from Oracle to S3 in a specified output format (e.g., Parquet).
+Validate data at multiple stages of the ingestion process.
+Maintain data in Iceberg tables managed by Hive Metastore.
+Support partitioning by specified columns.
+Allow optional filters and field selection for source data.
+Provide clear logging and alerting mechanisms for data quality issues.
+2. Architecture
+
+2.1 Components
+Data Source: Oracle database
+Data Target: S3 bucket (with Iceberg format)
+Validation Rules: JSON configuration files
+Utilities: Separate utility modules for ingestion, validation, logging, and alerting.
+2.2 Directory Structure
+bash
+Copy code
+data_ingestion_framework/
+├── config/
+│   ├── job_config.json         # Job-specific metadata
+│   ├── db_config.json          # Database connection details
+├── utils/
+│   ├── ingestion_utils.py      # Data ingestion logic
+│   ├── validation_utils.py     # Data validation functions
+│   ├── logging_utils.py        # Logging of issues
+│   ├── alerting_utils.py       # Alerts for issues
+│   ├── self_healing.py         # Self-healing logic
+│   ├── schema_utils.py         # Schema handling
+├── main.py                     # Entry point for running the job
+├── tests/
+│   ├── test_data_validation.py  # Unit tests using PyDeequ
+└── resources/
+    ├── validation_rules.json   # Validation rules for data quality checks
+3. Configuration Files
+
+3.1 job_config.json
+This file contains metadata for the job, including source and target information, validation rules, and optional parameters for data ingestion.
+
+json
+Copy code
+{
+  "job_id": "12345",
+  "source": {
+    "table": "source_table",
+    "fields": ["field1", "field2"],  // Optional: fields to select
+    "where_clause": "status = 'active'", // Optional: filter for source data
+    "last_edited_timestamp": "last_updated" // Optional: timestamp for incremental ingestion
+  },
+  "target": {
+    "bucket": "s3://my-bucket/data",
+    "format": "parquet", // Output file format (e.g., parquet, csv, etc.)
+    "iceberg_catalog": "hive",
+    "database": "my_catalog.db",
+    "partition_by": "event_date" // Column to partition by
+  },
+  "validations": {
+    "schema_validation": true,
+    "record_count_validation": 10000,
+    "data_freshness_validation_column": "event_date",
+    "file_format": ["parquet"]
+  },
+  "post_ingestion_validations": {
+    "business_rules": [
+      {"column": "order_amount", "rule": ">= 0"}
+    ],
+    "consistency_checks": [
+      {"fact_table": "orders", "dim_table": "customers", "fact_column": "customer_id", "dim_column": "id"}
+    ],
+    "aggregate_validations": [
+      {"column": "order_total", "expected_sum": 100000}
+    ]
+  }
+}
+3.2 db_config.json
+This file stores the database connection details securely.
+
+json
+Copy code
+{
+  "oracle": {
+    "jdbc_url": "jdbc:oracle:thin:@//db_url:port/dbname",
+    "username": "db_user",
+    "password": "db_password"
+  }
+}
+4. Utilities
+
+4.1 Ingestion Logic (ingestion_utils.py)
+This module handles the ingestion of data from Oracle to S3, incorporating optional filters, field selections, and partitioning based on the provided configurations.
+
+4.2 Validation Logic (validation_utils.py)
+This module contains functions to perform pre-ingestion and post-ingestion validations based on the rules specified in job_config.json.
+
+4.3 Logging and Alerting (logging_utils.py & alerting_utils.py)
+These modules handle the logging of data quality issues and alerting for critical failures.
+
+4.4 Self-Healing Logic (self_healing.py)
+This module provides mechanisms for retrying failed jobs and quarantining bad data.
+
+5. Main Execution Script
+
+The main.py file is the entry point for executing the data ingestion job. It initializes the Spark session, loads configurations, and calls the ingestion function.
+
+6. Data Validation Unit Testing
+
+6.1 Testing Framework
+Unit tests are implemented using PyDeequ to validate data quality checks.
+
+test_data_validation.py should include various test cases to ensure data meets the expected criteria.
+
+Example Unit Test Structure
+python
+Copy code
+from pyspark.sql import SparkSession
+from pyspark.sql import DataFrame
+from pydeequ import Check, CheckLevel, VerificationSuite
+
+def test_schema_validation(df: DataFrame):
+    check = Check(spark, CheckLevel.Error, "schema_check")
+    verification_result = VerificationSuite(spark) \
+        .onData(df) \
+        .addCheck(check.hasColumns("column1", "column2")) \
+        .run()
+
+    assert verification_result.checks[0].status == "Success"
+7. Running the Framework
+
+7.1 Requirements
+Apache Spark with PySpark
+PyDeequ
+Java Runtime Environment (JRE)
+Oracle JDBC Driver
+7.2 Instructions
+Clone the Repository: Clone this repository to your local machine.
+Set Up Environment: Make sure you have Spark and necessary libraries installed.
+Configure Connection:
+Edit config/db_config.json to include your database connection details.
+Edit config/job_config.json for job-specific configurations.
+Run the Job:
+Execute main.py to start the ingestion job.
+bash
+Copy code
+python main.py
+7.3 Unit Tests
+Run the unit tests using a testing framework like pytest.
+
+bash
+Copy code
+pytest tests/test_data_validation.py
+8. Future Enhancements
+
+Integrate a proper secrets management solution for sensitive information.
+Add more validation checks based on business rules.
+Implement a more comprehensive alerting system using tools like AWS CloudWatch or Prometheus.
+Extend the framework to support additional data sources.
+README for Data Ingestion Framework
+
+Data Ingestion Framework
+
+This framework ingests data from an Oracle database into an S3 bucket using Apache Iceberg for efficient data management. It includes validation, logging, error handling, and self-healing mechanisms.
+
+Table of Contents
+Overview
+Architecture
+Configuration Files
+Utilities
+Main Execution Script
+Data Validation Unit Testing
+Running the Framework
+Future Enhancements
+Overview
+The framework is designed to ensure data quality and reliability during ingestion processes, preventing stale data and ensuring adherence to business rules.
+
+Architecture
+The architecture consists of a Spark application that connects to an Oracle database and an S3 bucket while performing various validations. See the Detailed Design Document for a more in-depth overview.
+
+Configuration Files
+Configuration files (job_config.json and db_config.json) define the job parameters and database connection details.
+
+Utilities
+Utility modules handle ingestion logic, validation, logging, alerting, and self-healing mechanisms.
+
+Main Execution Script
+The entry point for the job is main.py, which initializes Spark, loads configurations, and executes the ingestion.
+
+Data Validation Unit Testing
+Unit tests are created using PyDeequ to validate data quality checks and ensure the framework functions correctly.
+
+Running the Framework
+Clone the Repository.
+Set Up Environment: Ensure you have Spark and required libraries.
+Configure Connection: Update configuration files with database connection details.
+Run the Job: Execute python main.py to start ingestion.
+Run Tests: Execute pytest tests/test_data_validation.py to run unit tests.
+Future Enhancements
+Consider integrating a secrets management solution, expanding validation checks, and improving alerting systems.
+
+This updated document provides a comprehensive guide to your data ingestion framework with the added features you requested. Let me know if you need further adjustments or specific code snippets!
+
