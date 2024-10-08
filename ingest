@@ -1,0 +1,1416 @@
+To make the data ingestion framework more flexible by keeping references to the corresponding db_config and s3_config inside job_config.json, you can update the design to allow for different source and target configurations.
+Updated Project Structure
+plaintext
+Copy code
+data_ingestion_framework/
+├── config/
+│   ├── job_config.json         # Job-specific metadata with references to db_config and s3_config
+│   ├── db_config/
+│   │   ├── db_config_1.json    # Database connection details for Source 1
+│   │   ├── db_config_2.json    # Database connection details for Source 2
+│   ├── s3_config/
+│   │   ├── s3_config_1.json    # S3 bucket configuration for Target 1
+│   │   ├── s3_config_2.json    # S3 bucket configuration for Target 2
+├── utils/
+│   ├── ingestion_utils.py      # Data ingestion logic
+│   ├── validation_utils.py     # Data validation functions
+│   ├── logging_utils.py        # Logging of issues
+│   ├── alerting_utils.py       # Alerts for issues
+│   ├── self_healing.py         # Self-healing logic
+│   ├── schema_utils.py         # Schema handling
+├── main.py                     # Entry point for running the job
+├── tests/
+│   ├── test_data_validation.py  # Unit tests using PyDeequ
+└── resources/
+    ├── validation_rules.json   # Validation rules for data quality checks
+Updated job_config.json
+In this updated configuration, the job_config.json will contain references to the corresponding db_config and s3_config files. This makes the design more flexible for different jobs and environments.
+json
+Copy code
+{
+  "source": {
+    "db_config": "config/db_config/db_config_1.json",  // Reference to the source database configuration
+    "table": "source_table",
+    "fields": ["field1", "field2"],  // Optional: fields to select
+    "where_clause": "status = 'active'",  // Optional: filter for source data
+    "last_edited_timestamp": "last_updated"  // Optional: timestamp for incremental ingestion
+  },
+  "target": {
+    "s3_config": "config/s3_config/s3_config_1.json",  // Reference to the target S3 bucket configuration
+    "format": "parquet",  // Output file format (e.g., parquet, csv, etc.)
+    "iceberg_catalog": "hive",
+    "database": "my_catalog.db",
+    "partition_by": "event_date"  // Column to partition by
+  }
+}
+Example db_config_1.json
+json
+Copy code
+{
+  "oracle": {
+    "url": "jdbc:oracle:thin:@myhost:1521:mydb",
+    "username": "user",
+    "password": "password",
+    "driver": "oracle.jdbc.driver.OracleDriver"
+  }
+}
+Example s3_config_1.json
+json
+Copy code
+{
+  "s3": {
+    "bucket_name": "my-s3-bucket",
+    "region": "us-west-2"
+  }
+}
+ingestion_utils.py Update
+python
+Copy code
+import pyspark
+from pyspark.sql import SparkSession
+from utils.schema_utils import validate_schema
+from utils.logging_utils import log_info, log_error
+from utils.validation_utils import run_validations
+import json
+
+def load_config(config_path):
+    with open(config_path) as f:
+        return json.load(f)
+
+def get_oracle_data(spark, db_config_path, source_config):
+    db_config = load_config(db_config_path)
+    jdbc_url = db_config['oracle']['url']
+    jdbc_properties = {
+        "user": db_config['oracle']['username'],
+        "password": db_config['oracle']['password'],
+        "driver": db_config['oracle']['driver']
+    }
+
+    query = f"SELECT {', '.join(source_config.get('fields', ['*']))} FROM {source_config['table']}"
+    
+    if source_config.get('where_clause'):
+        query += f" WHERE {source_config['where_clause']}"
+    
+    log_info(f"Running query: {query}")
+    
+    df = spark.read.jdbc(url=jdbc_url, table=f"({query}) as source", properties=jdbc_properties)
+    return df
+
+def write_to_s3(df, target_config, s3_config_path):
+    s3_config = load_config(s3_config_path)
+    bucket = s3_config['s3']['bucket_name']
+    partition_by = target_config['partition_by']
+    output_format = target_config['format']
+
+    log_info(f"Writing data to S3: {bucket} in {output_format} format, partitioned by {partition_by}")
+    
+    df.write.mode("overwrite").partitionBy(partition_by).format(output_format).save(bucket)
+
+def run_ingestion(config_path):
+    spark = SparkSession.builder \
+        .appName("Data Ingestion") \
+        .getOrCreate()
+
+    # Load main job config
+    config = load_config(config_path)
+    
+    # Load source data
+    df = get_oracle_data(spark, config['source']['db_config'], config['source'])
+    
+    # Data validation (pre-ingestion)
+    run_validations(df, config['source'])
+
+    # Write to S3 Iceberg
+    write_to_s3(df, config['target'], config['target']['s3_config'])
+
+    log_info("Data ingestion completed successfully.")
+
+if __name__ == "__main__":
+    run_ingestion("config/job_config.json")
+Explanation:
+Flexible References:
+db_config and s3_config are now external files referenced within job_config.json, allowing flexibility to switch between different DB connections and S3 buckets based on the job.
+Dynamic Database Connections:
+The source database configuration is loaded dynamically from the db_config path provided in the job_config.json.
+Dynamic Target S3 Configuration:
+Similarly, the S3 configuration is loaded from the s3_config path provided in the job_config.json, allowing different buckets for different jobs.
+Partitioning and Query Flexibility:
+The ingestion process respects optional fields for selecting specific columns and filtering via where_clause. It also handles partitioning of the data while writing to S3 in the specified format.
+Logging for Debugging:
+Added debug logs to print the formed query and important milestones in the ingestion process.
+This updated structure now offers maximum flexibility in switching between different sources and targets by simply changing the references in job_config.json, making the framework easily adaptable to different environments or pipelines.
+Updated Project Structure
+plaintext
+Copy code
+data_ingestion_framework/
+├── config/
+│   ├── job_config.json         # Job-specific metadata with references to db_config and s3_config
+│   ├── db_config/
+│   │   ├── db_config_1.json    # Database connection details for Source 1
+│   │   ├── db_config_2.json    # Database connection details for Source 2
+│   ├── s3_config/
+│   │   ├── s3_config_1.json    # S3 bucket configuration for Target 1 (with Iceberg catalog)
+│   │   ├── s3_config_2.json    # S3 bucket configuration for Target 2 (with Iceberg catalog)
+├── utils/
+│   ├── ingestion_utils.py      # Data ingestion logic
+│   ├── validation_utils.py     # Data validation functions
+│   ├── logging_utils.py        # Logging of issues
+│   ├── alerting_utils.py       # Alerts for issues
+│   ├── self_healing.py         # Self-healing logic
+│   ├── schema_utils.py         # Schema handling
+├── main.py                     # Entry point for running the job
+├── tests/
+│   ├── test_data_validation.py  # Unit tests using PyDeequ
+└── resources/
+    ├── validation_rules.json   # Validation rules for data quality checks
+Updated job_config.json
+json
+Copy code
+{
+  "source": {
+    "db_config": "config/db_config/db_config_1.json",  // Reference to the source database configuration
+    "table": "source_table",
+    "fields": ["field1", "field2"],  // Optional: fields to select
+    "where_clause": "status = 'active'",  // Optional: filter for source data
+    "last_edited_timestamp": "last_updated"  // Optional: timestamp for incremental ingestion
+  },
+  "target": {
+    "s3_config": "config/s3_config/s3_config_1.json",  // Reference to the target S3 bucket configuration
+    "format": "parquet",  // Output file format (e.g., parquet, csv, etc.)
+    "partition_by": "event_date"  // Column to partition by
+  }
+}
+Updated s3_config_1.json
+json
+Copy code
+{
+  "s3": {
+    "bucket_name": "my-s3-bucket",
+    "region": "us-west-2"
+  },
+  "iceberg": {
+    "catalog": "hive",
+    "database": "my_catalog.db"
+  }
+}
+Updated ingestion_utils.py
+python
+Copy code
+import pyspark
+from pyspark.sql import SparkSession
+from utils.schema_utils import validate_schema
+from utils.logging_utils import log_info, log_error
+from utils.validation_utils import run_validations
+import json
+
+def load_config(config_path):
+    with open(config_path) as f:
+        return json.load(f)
+
+def get_oracle_data(spark, db_config_path, source_config):
+    db_config = load_config(db_config_path)
+    jdbc_url = db_config['oracle']['url']
+    jdbc_properties = {
+        "user": db_config['oracle']['username'],
+        "password": db_config['oracle']['password'],
+        "driver": db_config['oracle']['driver']
+    }
+
+    query = f"SELECT {', '.join(source_config.get('fields', ['*']))} FROM {source_config['table']}"
+    
+    if source_config.get('where_clause'):
+        query += f" WHERE {source_config['where_clause']}"
+    
+    log_info(f"Running query: {query}")
+    
+    df = spark.read.jdbc(url=jdbc_url, table=f"({query}) as source", properties=jdbc_properties)
+    return df
+
+def write_to_s3(df, target_config, s3_config_path):
+    s3_config = load_config(s3_config_path)
+    bucket = s3_config['s3']['bucket_name']
+    partition_by = target_config['partition_by']
+    output_format = target_config['format']
+
+    iceberg_catalog = s3_config['iceberg']['catalog']
+    iceberg_database = s3_config['iceberg']['database']
+
+    log_info(f"Writing data to S3: {bucket} in {output_format} format, partitioned by {partition_by}")
+    log_info(f"Iceberg catalog: {iceberg_catalog}, database: {iceberg_database}")
+    
+    df.write.mode("overwrite").partitionBy(partition_by).format(output_format).save(bucket)
+
+def run_ingestion(config_path):
+    spark = SparkSession.builder \
+        .appName("Data Ingestion") \
+        .getOrCreate()
+
+    # Load main job config
+    config = load_config(config_path)
+    
+    # Load source data
+    df = get_oracle_data(spark, config['source']['db_config'], config['source'])
+    
+    # Data validation (pre-ingestion)
+    run_validations(df, config['source'])
+
+    # Write to S3 Iceberg
+    write_to_s3(df, config['target'], config['target']['s3_config'])
+
+    log_info("Data ingestion completed successfully.")
+
+if __name__ == "__main__":
+    run_ingestion("config/job_config.json")
+Key Changes:
+Moved Iceberg Catalog and Database:
+The iceberg_catalog and database have been moved to the s3_config.json file. Now, the target bucket's configuration includes the Iceberg catalog and database to make the framework more flexible.
+Flexible S3 & Iceberg Configuration:
+The S3 bucket, Iceberg catalog, and database are defined in the s3_config.json, making it easier to switch between different configurations by changing the config reference.
+Logging:
+Added logs to print important details for debugging, including the query being executed and the target Iceberg configuration.
+This design allows you to manage multiple source database connections and target S3 buckets with Iceberg configurations by simply switching the references in job_config.json. It keeps the ingestion process adaptable to different environments and use cases.
+Updated Project Structure
+plaintext
+Copy code
+data_ingestion_framework/
+├── config/
+│   ├── job_config.json         # Job-specific metadata with references to db_config, s3_config, and validation_rules
+│   ├── db_config/
+│   │   ├── db_config_1.json    # Database connection details for Source 1
+│   │   ├── db_config_2.json    # Database connection details for Source 2
+│   ├── s3_config/
+│   │   ├── s3_config_1.json    # S3 bucket configuration for Target 1 (with Iceberg catalog)
+│   │   ├── s3_config_2.json    # S3 bucket configuration for Target 2 (with Iceberg catalog)
+│   ├── validation_rules/
+│   │   ├── validation_rules_1.json  # Validation rules for Job 1
+│   │   ├── validation_rules_2.json  # Validation rules for Job 2
+├── utils/
+│   ├── ingestion_utils.py      # Data ingestion logic
+│   ├── validation_utils.py     # Data validation functions
+│   ├── logging_utils.py        # Logging of issues
+│   ├── alerting_utils.py       # Alerts for issues
+│   ├── self_healing.py         # Self-healing logic
+│   ├── schema_utils.py         # Schema handling
+├── main.py                     # Entry point for running the job
+├── tests/
+│   ├── test_data_validation.py  # Unit tests using PyDeequ
+└── resources/
+    └── validation_rules.json   # Validation rules for data quality checks (common reference)
+Updated job_config.json
+json
+Copy code
+{
+  "source": {
+    "db_config": "config/db_config/db_config_1.json",  // Reference to the source database configuration
+    "table": "source_table",
+    "fields": ["field1", "field2"],  // Optional: fields to select
+    "where_clause": "status = 'active'",  // Optional: filter for source data
+    "last_edited_timestamp": "last_updated"  // Optional: timestamp for incremental ingestion
+  },
+  "target": {
+    "s3_config": "config/s3_config/s3_config_1.json",  // Reference to the target S3 bucket configuration
+    "format": "parquet",  // Output file format (e.g., parquet, csv, etc.)
+    "partition_by": "event_date"  // Column to partition by
+  },
+  "validation_rules": "config/validation_rules/validation_rules_1.json"  // Reference to validation rules
+}
+Example validation_rules_1.json
+json
+Copy code
+{
+  "pre_ingestion": {
+    "schema_validation": true,
+    "record_count_validation": true,
+    "freshness_validation": {
+      "enabled": true,
+      "time_column": "event_date",
+      "allowed_lag_minutes": 60
+    },
+    "format_validation": ["parquet", "json"]
+  },
+  "post_ingestion": {
+    "business_rules": [
+      {
+        "rule_name": "Positive Order Amount",
+        "condition": "order_amount >= 0"
+      }
+    ],
+    "consistency_checks": {
+      "foreign_key_check": {
+        "enabled": true,
+        "source_column": "customer_id",
+        "target_table": "customers",
+        "target_column": "customer_id"
+      }
+    },
+    "aggregation_validation": {
+      "enabled": true,
+      "aggregate_column": "total_sales",
+      "expected_sum": 1000000
+    },
+    "anomaly_detection": {
+      "detect_duplicates": true,
+      "detect_outliers": true,
+      "track_missing_values": true
+    }
+  },
+  "issue_management": {
+    "logging_enabled": true,
+    "alerting_enabled": true,
+    "critical_issues_alert": ["schema_mismatch", "business_rule_violation"]
+  }
+}
+Updated ingestion_utils.py
+python
+Copy code
+import pyspark
+from pyspark.sql import SparkSession
+from utils.schema_utils import validate_schema
+from utils.logging_utils import log_info, log_error
+from utils.validation_utils import run_validations
+import json
+
+def load_config(config_path):
+    with open(config_path) as f:
+        return json.load(f)
+
+def get_oracle_data(spark, db_config_path, source_config):
+    db_config = load_config(db_config_path)
+    jdbc_url = db_config['oracle']['url']
+    jdbc_properties = {
+        "user": db_config['oracle']['username'],
+        "password": db_config['oracle']['password'],
+        "driver": db_config['oracle']['driver']
+    }
+
+    query = f"SELECT {', '.join(source_config.get('fields', ['*']))} FROM {source_config['table']}"
+    
+    if source_config.get('where_clause'):
+        query += f" WHERE {source_config['where_clause']}"
+    
+    log_info(f"Running query: {query}")
+    
+    df = spark.read.jdbc(url=jdbc_url, table=f"({query}) as source", properties=jdbc_properties)
+    return df
+
+def write_to_s3(df, target_config, s3_config_path):
+    s3_config = load_config(s3_config_path)
+    bucket = s3_config['s3']['bucket_name']
+    partition_by = target_config['partition_by']
+    output_format = target_config['format']
+
+    iceberg_catalog = s3_config['iceberg']['catalog']
+    iceberg_database = s3_config['iceberg']['database']
+
+    log_info(f"Writing data to S3: {bucket} in {output_format} format, partitioned by {partition_by}")
+    log_info(f"Iceberg catalog: {iceberg_catalog}, database: {iceberg_database}")
+    
+    df.write.mode("overwrite").partitionBy(partition_by).format(output_format).save(bucket)
+
+def run_ingestion(config_path):
+    spark = SparkSession.builder \
+        .appName("Data Ingestion") \
+        .getOrCreate()
+
+    # Load main job config
+    config = load_config(config_path)
+    
+    # Load source data
+    df = get_oracle_data(spark, config['source']['db_config'], config['source'])
+    
+    # Data validation (pre-ingestion)
+    validation_rules_path = config['validation_rules']
+    run_validations(df, validation_rules_path)
+
+    # Write to S3 Iceberg
+    write_to_s3(df, config['target'], config['target']['s3_config'])
+
+    log_info("Data ingestion completed successfully.")
+
+if __name__ == "__main__":
+    run_ingestion("config/job_config.json")
+Key Updates:
+Validation Rules Reference:
+The job_config.json now includes a reference to a validation_rules.json file. This keeps the validation logic dynamic and adaptable for different jobs, allowing you to modify the rules based on job requirements.
+Modular Validation:
+The run_validations function now accepts a validation rules file and applies pre-ingestion and post-ingestion validation based on those rules.
+Logging:
+As part of the ingestion process, debugging information and data validation checks are logged to help monitor and troubleshoot the ingestion pipeline.
+Flexible Schema:
+Separate configuration files for database and S3 ensure that the pipeline can easily be adapted to different data sources and targets, supporting multiple ingestion workflows with minimal code changes.
+With this update, your framework will support dynamic data validation rules and provide greater flexibility for managing source and target configurations, while still handling pre-ingestion and post-ingestion validation robustly.
+Updated Project Structure:
+plaintext
+Copy code
+data_ingestion_framework/
+├── config/
+│   ├── job_config.json             # Job-specific metadata with references to db_config, s3_config, validation_rules, logging_config, and alerting_config
+│   ├── db_config/
+│   │   ├── db_config_1.json        # Database connection details for Source 1
+│   ├── s3_config/
+│   │   ├── s3_config_1.json        # S3 bucket configuration for Target 1 (with Iceberg catalog)
+│   ├── validation_rules/
+│   │   ├── validation_rules_1.json # Validation rules for Job 1
+│   ├── logging_config/
+│   │   ├── logging_config_1.json   # Logging configuration for Job 1
+│   ├── alerting_config/
+│   │   ├── alerting_config_1.json  # Alerting configuration for Job 1
+├── utils/
+│   ├── ingestion_utils.py          # Data ingestion logic
+│   ├── validation_utils.py         # Data validation functions
+│   ├── logging_utils.py            # Logging of issues (based on config)
+│   ├── alerting_utils.py           # Alerts for issues (based on config)
+│   ├── self_healing.py             # Self-healing logic
+│   ├── schema_utils.py             # Schema handling
+├── main.py                         # Entry point for running the job
+├── tests/
+│   ├── test_data_validation.py      # Unit tests using PyDeequ
+└── resources/
+    └── validation_rules.json       # Validation rules for data quality checks
+Updated job_config.json
+json
+Copy code
+{
+  "source": {
+    "db_config": "config/db_config/db_config_1.json",  
+    "table": "source_table",
+    "fields": ["field1", "field2"],  
+    "where_clause": "status = 'active'",  
+    "last_edited_timestamp": "last_updated"  
+  },
+  "target": {
+    "s3_config": "config/s3_config/s3_config_1.json",  
+    "format": "parquet",  
+    "partition_by": "event_date"  
+  },
+  "validation_rules": "config/validation_rules/validation_rules_1.json",  
+  "logging_config": "config/logging_config/logging_config_1.json",  
+  "alerting_config": "config/alerting_config/alerting_config_1.json"  
+}
+Example logging_config_1.json
+json
+Copy code
+{
+  "log_level": "INFO", 
+  "log_to_file": true,   
+  "log_file_path": "logs/job_1.log",  
+  "log_to_console": true,  
+  "log_format": "%(asctime)s - %(levelname)s - %(message)s"
+}
+Example alerting_config_1.json
+json
+Copy code
+{
+  "alert_enabled": true,  
+  "alert_critical_only": true,  
+  "alert_channel": "email",  
+  "email_recipients": ["admin@example.com", "support@example.com"],  
+  "sms_recipients": ["+1234567890"],  
+  "alerting_service": "AWS SNS",  
+  "aws_sns_topic_arn": "arn:aws:sns:us-west-2:123456789012:alert-topic"
+}
+Updated ingestion_utils.py
+We’ll integrate both the logging and alerting configurations into the ingestion process to enhance visibility and control over how information and alerts are managed.
+python
+Copy code
+import pyspark
+from pyspark.sql import SparkSession
+from utils.schema_utils import validate_schema
+from utils.logging_utils import setup_logging, log_info, log_error
+from utils.validation_utils import run_validations
+from utils.alerting_utils import setup_alerting, send_alert
+import json
+
+def load_config(config_path):
+    with open(config_path) as f:
+        return json.load(f)
+
+def get_oracle_data(spark, db_config_path, source_config):
+    db_config = load_config(db_config_path)
+    jdbc_url = db_config['oracle']['url']
+    jdbc_properties = {
+        "user": db_config['oracle']['username'],
+        "password": db_config['oracle']['password'],
+        "driver": db_config['oracle']['driver']
+    }
+
+    query = f"SELECT {', '.join(source_config.get('fields', ['*']))} FROM {source_config['table']}"
+    
+    if source_config.get('where_clause'):
+        query += f" WHERE {source_config['where_clause']}"
+    
+    log_info(f"Running query: {query}")
+    
+    df = spark.read.jdbc(url=jdbc_url, table=f"({query}) as source", properties=jdbc_properties)
+    return df
+
+def write_to_s3(df, target_config, s3_config_path):
+    s3_config = load_config(s3_config_path)
+    bucket = s3_config['s3']['bucket_name']
+    partition_by = target_config['partition_by']
+    output_format = target_config['format']
+
+    iceberg_catalog = s3_config['iceberg']['catalog']
+    iceberg_database = s3_config['iceberg']['database']
+
+    log_info(f"Writing data to S3: {bucket} in {output_format} format, partitioned by {partition_by}")
+    log_info(f"Iceberg catalog: {iceberg_catalog}, database: {iceberg_database}")
+    
+    df.write.mode("overwrite").partitionBy(partition_by).format(output_format).save(bucket)
+
+def run_ingestion(config_path):
+    spark = SparkSession.builder \
+        .appName("Data Ingestion") \
+        .getOrCreate()
+
+    # Load main job config
+    config = load_config(config_path)
+    
+    # Setup logging
+    setup_logging(config['logging_config'])
+    
+    # Setup alerting
+    setup_alerting(config['alerting_config'])
+
+    try:
+        # Load source data
+        df = get_oracle_data(spark, config['source']['db_config'], config['source'])
+        
+        # Data validation (pre-ingestion)
+        validation_rules_path = config['validation_rules']
+        run_validations(df, validation_rules_path)
+
+        # Write to S3 Iceberg
+        write_to_s3(df, config['target'], config['target']['s3_config'])
+
+        log_info("Data ingestion completed successfully.")
+    
+    except Exception as e:
+        log_error(f"Error during data ingestion: {e}")
+        send_alert(f"Data ingestion failed: {e}")
+        raise e
+
+if __name__ == "__main__":
+    run_ingestion("config/job_config.json")
+Updated logging_utils.py
+python
+Copy code
+import logging
+import json
+
+logger = None
+
+def setup_logging(logging_config_path):
+    global logger
+    with open(logging_config_path) as f:
+        config = json.load(f)
+    
+    log_level = getattr(logging, config['log_level'].upper(), logging.INFO)
+    log_format = config.get('log_format', '%(asctime)s - %(levelname)s - %(message)s')
+    
+    logging.basicConfig(
+        level=log_level,
+        format=log_format
+    )
+
+    if config.get('log_to_file'):
+        file_handler = logging.FileHandler(config['log_file_path'])
+        file_handler.setFormatter(logging.Formatter(log_format))
+        logger = logging.getLogger()
+        logger.addHandler(file_handler)
+    
+    logger = logging.getLogger()
+
+def log_info(message):
+    if logger:
+        logger.info(message)
+
+def log_error(message):
+    if logger:
+        logger.error(message)
+Updated alerting_utils.py
+python
+Copy code
+import json
+import logging
+
+def setup_alerting(alerting_config_path):
+    with open(alerting_config_path) as f:
+        config = json.load(f)
+    
+    global alert_config
+    alert_config = config
+
+def send_alert(message):
+    if alert_config.get('alert_enabled', False):
+        alert_critical_only = alert_config.get('alert_critical_only', False)
+        alert_channel = alert_config.get('alert_channel', 'email')
+        
+        if alert_channel == 'email':
+            send_email_alert(message)
+        elif alert_channel == 'sms':
+            send_sms_alert(message)
+        # Handle additional alerting channels here
+
+def send_email_alert(message):
+    recipients = alert_config.get('email_recipients', [])
+    logging.info(f"Sending email alert to {', '.join(recipients)}: {message}")
+
+def send_sms_alert(message):
+    recipients = alert_config.get('sms_recipients', [])
+    logging.info(f"Sending SMS alert to {', '.join(recipients)}: {message}")
+Key Additions:
+Logging Config:
+The logging_config.json allows you to specify how and where logs are stored (console, file) and what log level to use (DEBUG, INFO, etc.).
+Alerting Config:
+The alerting_config.json controls alerting behavior such as whether alerts should be sent, which channels (email, SMS), and what service to use (e.g., AWS SNS).
+Modular and Flexible:
+Both the logging and alerting behaviors are externalized, allowing easy modifications without changing the core codebase. Each job can have different logging/alerting configurations.
+This structure creates a robust and flexible framework for data ingestion, handling key aspects like logging, alerting, and validation efficiently.
+Update to job_config.json
+json
+Copy code
+{
+  "source": {
+    "db_config": "config/db_config/db_config_1.json",  
+    "table": "source_table",
+    "fields": ["field1", "field2"],  
+    "where_clause": "status = 'active'",  
+    "last_edited_timestamp": "last_updated"  
+  },
+  "target": {
+    "s3_config": "config/s3_config/s3_config_1.json",  
+    "format": "parquet",  
+    "partition_by": ["event_date", "region"]  // Supports multiple partition columns
+  },
+  "validation_rules": "config/validation_rules/validation_rules_1.json",  
+  "logging_config": "config/logging_config/logging_config_1.json",  
+  "alerting_config": "config/alerting_config/alerting_config_1.json"  
+}
+Update to ingestion_utils.py
+In the write_to_s3() function, I'll modify the partitioning logic to support multiple columns.
+python
+Copy code
+def write_to_s3(df, target_config, s3_config_path):
+    s3_config = load_config(s3_config_path)
+    bucket = s3_config['s3']['bucket_name']
+    
+    # Handle partitioning by multiple columns
+    partition_by = target_config.get('partition_by', [])
+    if isinstance(partition_by, str):
+        partition_by = [partition_by]  # Convert to list if a single column is provided
+    
+    output_format = target_config['format']
+    iceberg_catalog = s3_config['iceberg']['catalog']
+    iceberg_database = s3_config['iceberg']['database']
+
+    log_info(f"Writing data to S3: {bucket} in {output_format} format, partitioned by {partition_by}")
+    log_info(f"Iceberg catalog: {iceberg_catalog}, database: {iceberg_database}")
+
+    # Write the data, partitioned by the specified columns
+    if partition_by:
+        df.write.mode("overwrite").partitionBy(partition_by).format(output_format).save(bucket)
+    else:
+        df.write.mode("overwrite").format(output_format).save(bucket)
+Explanation of Changes:
+partition_by handling:
+The partition_by key in the job_config.json can now accept either a single column (as a string) or multiple columns (as a list of strings).
+The code checks if partition_by is a string and converts it into a list if necessary, ensuring that both cases are handled correctly.
+Writing to S3:
+The df.write() method partitions the data by the specified columns using partitionBy(partition_by).
+This update will allow you to specify one or more partitioning columns for the target table, enhancing flexibility when dealing with partitioned datasets. If no partition column is provided, it will simply write without partitioning.
+
+main.py - Updated Code
+python
+Copy code
+import argparse
+from utils.ingestion_utils import perform_data_ingestion
+from utils.logging_utils import log_info
+from utils.config_utils import load_config
+
+def main():
+    # Set up argument parsing for command-line options
+    parser = argparse.ArgumentParser(description="Data Ingestion Framework")
+    parser.add_argument("--job_config", required=True, help="Path to the job configuration JSON file")
+    parser.add_argument("--load_type", choices=["full", "incremental"], default="incremental",
+                        help="Specify the type of load: full or incremental (default: incremental)")
+
+    args = parser.parse_args()
+
+    # Load the job config
+    job_config = load_config(args.job_config)
+    
+    # Log load type
+    log_info(f"Load type specified: {args.load_type}")
+
+    # Override incremental settings if full load is chosen
+    if args.load_type == "full":
+        log_info("Full load selected, overriding incremental load options.")
+        job_config['source'].pop('last_edited_timestamp', None)  # Ignore incremental option
+    else:
+        log_info("Incremental load will be applied, using CDC settings if available.")
+
+    # Perform the ingestion based on the provided job config and load type
+    perform_data_ingestion(job_config)
+
+if __name__ == "__main__":
+    main()
+Key Changes:
+Command-line arguments:
+Added an argument --load_type to specify whether you want a full load or incremental load. The default is incremental.
+Overriding incremental options:
+If --load_type full is specified, the code removes the last_edited_timestamp field from the job config, forcing a full load.
+CDC Key Handling:
+When running incremental loads, the code will use the last_edited_timestamp or any CDC key provided in the job config.
+
+ingestion_utils.py - Updated Logic for Incremental/Full Load
+In the data ingestion logic, we'll update the SQL query construction to apply different logic based on the load type.
+python
+Copy code
+from pyspark.sql import SparkSession
+from utils.validation_utils import validate_data
+from utils.logging_utils import log_info
+from utils.config_utils import load_config
+
+def construct_query(source_config, is_full_load):
+    table = source_config['table']
+    fields = source_config.get('fields', '*')  # Select all fields if not specified
+    where_clause = source_config.get('where_clause', '')
+    
+    # For full load, we ignore CDC or incremental keys
+    if not is_full_load:
+        last_edited_col = source_config.get('last_edited_timestamp')
+        if last_edited_col:
+            if where_clause:
+                where_clause += f" AND {last_edited_col} >= :last_edited_value"
+            else:
+                where_clause = f"{last_edited_col} >= :last_edited_value"
+
+    # Build the SQL query
+    query = f"SELECT {', '.join(fields)} FROM {table}"
+    if where_clause:
+        query += f" WHERE {where_clause}"
+
+    log_info(f"Constructed query: {query}")
+    return query
+
+def perform_data_ingestion(job_config):
+    # Load database and S3 configurations
+    source_config = load_config(job_config['source']['db_config'])
+    target_config = load_config(job_config['target']['s3_config'])
+    
+    is_full_load = 'last_edited_timestamp' not in job_config['source']
+
+    # Initialize Spark session
+    spark = SparkSession.builder.appName("DataIngestion").getOrCreate()
+
+    # Construct the query based on full or incremental load
+    query = construct_query(job_config['source'], is_full_load)
+    
+    # Read data from source
+    df = spark.read.format("jdbc").options(
+        url=source_config['jdbc_url'],
+        dbtable=f"({query}) as source_data",
+        user=source_config['user'],
+        password=source_config['password'],
+        driver=source_config['driver']
+    ).load()
+
+    # Validate the data before loading
+    validate_data(df, job_config['validation_rules'])
+
+    # Write to S3 with partitioning
+    write_to_s3(df, job_config['target'], job_config['target']['s3_config'])
+
+    # Close Spark session
+    spark.stop()
+Key Changes:
+construct_query():
+This function constructs the SQL query based on whether a full or incremental load is being performed.
+If it's an incremental load, it appends the last_edited_timestamp filter to the where_clause, if applicable.
+perform_data_ingestion():
+Reads the source and target configurations.
+Decides if it's a full or incremental load based on the presence of the last_edited_timestamp in the source config.
+Constructs and logs the query, then performs the ingestion and writes the data to the target (S3 in Iceberg format).
+
+Unit Tests for Incremental and Full Load
+In tests/test_data_ingestion.py, you can add unit tests to check that the correct query is generated for full and incremental loads.
+python
+Copy code
+import unittest
+from utils.ingestion_utils import construct_query
+
+class TestDataIngestion(unittest.TestCase):
+
+    def test_full_load_query(self):
+        source_config = {
+            "table": "orders",
+            "fields": ["order_id", "amount", "created_at"],
+        }
+        query = construct_query(source_config, is_full_load=True)
+        self.assertEqual(query, "SELECT order_id, amount, created_at FROM orders")
+
+    def test_incremental_load_query(self):
+        source_config = {
+            "table": "orders",
+            "fields": ["order_id", "amount", "created_at"],
+            "where_clause": "status = 'active'",
+            "last_edited_timestamp": "updated_at"
+        }
+        query = construct_query(source_config, is_full_load=False)
+        expected_query = "SELECT order_id, amount, created_at FROM orders WHERE status = 'active' AND updated_at >= :last_edited_value"
+        self.assertEqual(query, expected_query)
+
+if __name__ == '__main__':
+    unittest.main()
+Explanation:
+Unit Test for Full Load: Checks that the query doesn't include the last_edited_timestamp filter when performing a full load.
+Unit Test for Incremental Load: Ensures that the correct query with the incremental CDC filter is formed when last_edited_timestamp is present.
+
+Conclusion
+With this update, your ingestion framework will:
+Allow the flexibility to choose between full and incremental loads via command-line arguments.
+Construct SQL queries accordingly, either using a CDC key (last_edited_timestamp) or selecting all data for full loads.
+Apply partitioning, data validation, and error handling as part of a robust reusable ingestion service.
+Let me know if you need further modifications!
+Updated Job Config Example
+Update the JSON configuration to use cdc_timestamp_field instead of last_edited_timestamp.
+json
+Copy code
+{
+  "source": {
+    "table": "source_table",
+    "fields": ["field1", "field2"],  // Optional: fields to select
+    "where_clause": "status = 'active'", // Optional: filter for source data
+    "cdc_timestamp_field": "last_updated" // Optional: timestamp for incremental ingestion
+  },
+  "target": {
+    "bucket": "s3://my-bucket/data",
+    "format": "parquet", // Output file format (e.g., parquet, csv, etc.)
+    "iceberg_catalog": "hive",
+    "database": "my_catalog.db",
+    "partition_by": "event_date" // Column to partition by
+  },
+  ...
+}
+Updated main.py
+Update main.py to reference cdc_timestamp_field.
+python
+Copy code
+import argparse
+from utils.ingestion_utils import perform_data_ingestion
+from utils.logging_utils import log_info
+from utils.config_utils import load_config
+
+def main():
+    # Set up argument parsing for command-line options
+    parser = argparse.ArgumentParser(description="Data Ingestion Framework")
+    parser.add_argument("--job_config", required=True, help="Path to the job configuration JSON file")
+    parser.add_argument("--load_type", choices=["full", "incremental"], default="incremental",
+                        help="Specify the type of load: full or incremental (default: incremental)")
+
+    args = parser.parse_args()
+
+    # Load the job config
+    job_config = load_config(args.job_config)
+    
+    # Log load type
+    log_info(f"Load type specified: {args.load_type}")
+
+    # Override incremental settings if full load is chosen
+    if args.load_type == "full":
+        log_info("Full load selected, overriding incremental load options.")
+        job_config['source'].pop('cdc_timestamp_field', None)  # Ignore incremental option
+    else:
+        log_info("Incremental load will be applied, using CDC settings if available.")
+
+    # Perform the ingestion based on the provided job config and load type
+    perform_data_ingestion(job_config)
+
+if __name__ == "__main__":
+    main()
+Updated ingestion_utils.py
+Update ingestion_utils.py to construct queries using cdc_timestamp_field.
+python
+Copy code
+from pyspark.sql import SparkSession
+from utils.validation_utils import validate_data
+from utils.logging_utils import log_info
+from utils.config_utils import load_config
+
+def construct_query(source_config, is_full_load):
+    table = source_config['table']
+    fields = source_config.get('fields', '*')  # Select all fields if not specified
+    where_clause = source_config.get('where_clause', '')
+    
+    # For full load, we ignore CDC or incremental keys
+    if not is_full_load:
+        cdc_field = source_config.get('cdc_timestamp_field')
+        if cdc_field:
+            if where_clause:
+                where_clause += f" AND {cdc_field} >= :last_edited_value"
+            else:
+                where_clause = f"{cdc_field} >= :last_edited_value"
+
+    # Build the SQL query
+    query = f"SELECT {', '.join(fields)} FROM {table}"
+    if where_clause:
+        query += f" WHERE {where_clause}"
+
+    log_info(f"Constructed query: {query}")
+    return query
+
+def perform_data_ingestion(job_config):
+    # Load database and S3 configurations
+    source_config = load_config(job_config['source']['db_config'])
+    target_config = load_config(job_config['target']['s3_config'])
+    
+    is_full_load = 'cdc_timestamp_field' not in job_config['source']
+
+    # Initialize Spark session
+    spark = SparkSession.builder.appName("DataIngestion").getOrCreate()
+
+    # Construct the query based on full or incremental load
+    query = construct_query(job_config['source'], is_full_load)
+    
+    # Read data from source
+    df = spark.read.format("jdbc").options(
+        url=source_config['jdbc_url'],
+        dbtable=f"({query}) as source_data",
+        user=source_config['user'],
+        password=source_config['password'],
+        driver=source_config['driver']
+    ).load()
+
+    # Validate the data before loading
+    validate_data(df, job_config['validation_rules'])
+
+    # Write to S3 with partitioning
+    write_to_s3(df, job_config['target'], job_config['target']['s3_config'])
+
+    # Close Spark session
+    spark.stop()
+Updated Unit Tests
+Update the unit tests in tests/test_data_ingestion.py to reference cdc_timestamp_field.
+python
+Copy code
+import unittest
+from utils.ingestion_utils import construct_query
+
+class TestDataIngestion(unittest.TestCase):
+
+    def test_full_load_query(self):
+        source_config = {
+            "table": "orders",
+            "fields": ["order_id", "amount", "created_at"],
+        }
+        query = construct_query(source_config, is_full_load=True)
+        self.assertEqual(query, "SELECT order_id, amount, created_at FROM orders")
+
+    def test_incremental_load_query(self):
+        source_config = {
+            "table": "orders",
+            "fields": ["order_id", "amount", "created_at"],
+            "where_clause": "status = 'active'",
+            "cdc_timestamp_field": "updated_at"  # Updated field name
+        }
+        query = construct_query(source_config, is_full_load=False)
+        expected_query = "SELECT order_id, amount, created_at FROM orders WHERE status = 'active' AND updated_at >= :last_edited_value"
+        self.assertEqual(query, expected_query)
+
+if __name__ == '__main__':
+    unittest.main()
+Summary of Changes
+Renamed last_edited_timestamp to cdc_timestamp_field in all relevant parts of the code and configuration files.
+Updated both the ingestion logic and unit tests to ensure proper functionality with the new field name.
+Let me know if you need any further adjustments or additions!
+Data Ingestion Framework Structure
+bash
+Copy code
+data_ingestion_framework/
+├── config/
+│   ├── job_config.json         # Job-specific metadata
+│   ├── db_config.json          # Database connection details
+│   ├── logging_config.json      # Logging configuration
+│   ├── alerting_config.json     # Alerting configuration
+│   ├── validation_rules.json     # Validation rules for data quality checks
+├── utils/
+│   ├── ingestion_utils.py       # Data ingestion logic
+│   ├── validation_utils.py      # Data validation functions
+│   ├── logging_utils.py         # Logging of issues
+│   ├── alerting_utils.py        # Alerts for issues
+│   ├── self_healing.py          # Self-healing logic
+│   ├── schema_utils.py          # Schema handling
+│   ├── config_utils.py          # Load and manage configurations
+├── main.py                      # Entry point for running the job
+├── tests/
+│   ├── test_data_validation.py   # Unit tests using PyDeequ
+│   ├── test_data_ingestion.py    # Unit tests for ingestion logic
+└── README.md                     # Documentation for the framework
+Detailed File Contents
+1. config/job_config.json
+json
+Copy code
+{
+  "source": {
+    "table": "source_table",
+    "fields": ["field1", "field2"],  // Optional: fields to select
+    "where_clause": "status = 'active'", // Optional: filter for source data
+    "cdc_timestamp_field": "last_updated", // Optional: timestamp for incremental ingestion
+    "db_config": "db_config.json"  // Reference to DB config
+  },
+  "target": {
+    "bucket": "s3://my-bucket/data",
+    "format": "parquet", // Output file format (e.g., parquet, csv, etc.)
+    "iceberg_catalog": "hive",
+    "database": "my_catalog.db",
+    "partition_by": ["event_date"], // Column(s) to partition by
+    "s3_config": "s3_config.json"  // Reference to S3 config
+  },
+  "validation_rules": "validation_rules.json", // Reference to validation rules
+  "logging_config": "logging_config.json", // Reference to logging config
+  "alerting_config": "alerting_config.json"  // Reference to alerting config
+}
+2. config/db_config.json
+json
+Copy code
+{
+  "jdbc_url": "jdbc:oracle:thin:@//<hostname>:<port>/<service_name>",
+  "user": "<db_user>",
+  "password": "<db_password>",
+  "driver": "oracle.jdbc.driver.OracleDriver"
+}
+3. config/s3_config.json
+json
+Copy code
+{
+  "bucket": "s3://my-bucket/data",
+  "region": "us-west-2"
+}
+4. config/logging_config.json
+json
+Copy code
+{
+  "log_file": "data_ingestion.log",
+  "log_level": "INFO"
+}
+5. config/alerting_config.json
+json
+Copy code
+{
+  "alerting_service": "CloudWatch",
+  "notification_threshold": "ERROR",
+  "alert_recipient": "team@example.com"
+}
+6. config/validation_rules.json
+json
+Copy code
+{
+  "rules": [
+    {
+      "field": "amount",
+      "condition": ">= 0",
+      "message": "Order amount cannot be negative."
+    },
+    {
+      "field": "status",
+      "condition": "IN ('active', 'inactive')",
+      "message": "Status must be active or inactive."
+    }
+  ]
+}
+7. utils/ingestion_utils.py
+python
+Copy code
+import json
+from pyspark.sql import SparkSession
+from utils.validation_utils import validate_data
+from utils.logging_utils import log_info
+from utils.config_utils import load_config
+
+def construct_query(source_config, is_full_load):
+    table = source_config['table']
+    fields = source_config.get('fields', '*')
+    where_clause = source_config.get('where_clause', '')
+    
+    if not is_full_load:
+        cdc_field = source_config.get('cdc_timestamp_field')
+        if cdc_field:
+            if where_clause:
+                where_clause += f" AND {cdc_field} >= :last_edited_value"
+            else:
+                where_clause = f"{cdc_field} >= :last_edited_value"
+
+    query = f"SELECT {', '.join(fields)} FROM {table}"
+    if where_clause:
+        query += f" WHERE {where_clause}"
+
+    log_info(f"Constructed query: {query}")
+    return query
+
+def perform_data_ingestion(job_config):
+    source_config = load_config(job_config['source']['db_config'])
+    target_config = load_config(job_config['target']['s3_config'])
+    
+    is_full_load = 'cdc_timestamp_field' not in job_config['source']
+
+    spark = SparkSession.builder.appName("DataIngestion").getOrCreate()
+    query = construct_query(job_config['source'], is_full_load)
+    
+    df = spark.read.format("jdbc").options(
+        url=source_config['jdbc_url'],
+        dbtable=f"({query}) as source_data",
+        user=source_config['user'],
+        password=source_config['password'],
+        driver=source_config['driver']
+    ).load()
+
+    validate_data(df, job_config['validation_rules'])
+    write_to_s3(df, job_config['target'], target_config)
+
+    spark.stop()
+8. main.py
+python
+Copy code
+import argparse
+from utils.ingestion_utils import perform_data_ingestion
+from utils.logging_utils import log_info
+from utils.config_utils import load_config
+
+def main():
+    parser = argparse.ArgumentParser(description="Data Ingestion Framework")
+    parser.add_argument("--job_config", required=True, help="Path to the job configuration JSON file")
+    parser.add_argument("--load_type", choices=["full", "incremental"], default="incremental",
+                        help="Specify the type of load: full or incremental (default: incremental)")
+
+    args = parser.parse_args()
+
+    job_config = load_config(args.job_config)
+    
+    log_info(f"Load type specified: {args.load_type}")
+
+    if args.load_type == "full":
+        log_info("Full load selected, overriding incremental load options.")
+        job_config['source'].pop('cdc_timestamp_field', None)
+    else:
+        log_info("Incremental load will be applied, using CDC settings if available.")
+
+    perform_data_ingestion(job_config)
+
+if __name__ == "__main__":
+    main()
+9. tests/test_data_validation.py
+python
+Copy code
+import unittest
+from utils.validation_utils import validate_data
+from pyspark.sql import SparkSession
+
+class TestDataValidation(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        cls.spark = SparkSession.builder.appName("TestDataValidation").getOrCreate()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.spark.stop()
+
+    def test_validation(self):
+        # Your test data and validation logic here
+        pass
+
+if __name__ == '__main__':
+    unittest.main()
+10. tests/test_data_ingestion.py
+python
+Copy code
+import unittest
+from utils.ingestion_utils import construct_query
+
+class TestDataIngestion(unittest.TestCase):
+
+    def test_full_load_query(self):
+        source_config = {
+            "table": "orders",
+            "fields": ["order_id", "amount", "created_at"],
+        }
+        query = construct_query(source_config, is_full_load=True)
+        self.assertEqual(query, "SELECT order_id, amount, created_at FROM orders")
+
+    def test_incremental_load_query(self):
+        source_config = {
+            "table": "orders",
+            "fields": ["order_id", "amount", "created_at"],
+            "where_clause": "status = 'active'",
+            "cdc_timestamp_field": "updated_at"
+        }
+        query = construct_query(source_config, is_full_load=False)
+        expected_query = "SELECT order_id, amount, created_at FROM orders WHERE status = 'active' AND updated_at >= :last_edited_value"
+        self.assertEqual(query, expected_query)
+
+if __name__ == '__main__':
+    unittest.main()
+11. README.md
+markdown
+Copy code
+# Data Ingestion Framework
+
+## Overview
+This repository contains a robust data ingestion framework designed for transferring data from Oracle to S3 using Apache Spark with Iceberg. The framework supports both full and incremental data loading, along with data validation, logging, and alerting functionalities.
+
+## Directory Structure
+data_ingestion_framework/ ├── config/ # Configuration files ├── utils/ # Utility functions for ingestion and validation ├── main.py # Entry point for running the job ├── tests/ # Unit tests for validation and ingestion └── README.md # Documentation for the framework
+markdown
+Copy code
+## Configuration
+- **job_config.json**: Main configuration file for the job, including source, target, validation rules, and logging.
+- **db_config.json**: Contains database connection details for Oracle.
+- **s3_config.json**: Contains configuration for the target S3 bucket.
+- **logging_config.json**: Configuration for logging setup.
+- **alerting_config.json**: Configuration for alerting mechanisms.
+- **validation_rules.json**: Rules for validating data quality.
+
+## Usage
+Run the data ingestion job using the following command:
+
+```bash
+python main.py --job_config config/job_config.json --load_type <full|incremental>
+Testing
+Unit tests can be run using the following command:
+bash
+Copy code
+python -m unittest discover -s tests
+Dependencies
+Python 3.x
+PySpark
+Additional dependencies as specified in a requirements.txt file.
+License
+This project is licensed under the MIT License.
+sql
+Copy code
+### How to Check-in
+
+1. **Create a new repository** in Bitbucket.
+2. **Clone the repository** to your local machine.
+3. **Copy the above directory structure** into the cloned repository folder.
+4. **Commit the changes**:
+   ```bash
+   git add .
+   git commit -m "Initial commit of data ingestion framework"
+Push the changes to Bitbucket:bash Copy code   git push origin master
+  
+Additional Notes
+Ensure to replace placeholder values (like <hostname>, <db_user>, <db_password>, etc.) in the configuration files with actual values relevant to your environment.
+Adjust logging levels and alerting configurations as per your needs.
+Add any additional dependencies to a requirements.txt file if needed.
+This structure provides a solid foundation for your data ingestion framework, making it modular, testable, and easy to maintain. Let me know if you need any adjustments or additional features!
+Job Flow Diagram for Data Ingestion Framework
+plaintext
+Copy code
++-----------------+
+| Start Job       |
++-----------------+
+        |
+        v
++---------------------------+
+| Load Job Configuration    |
+| (job_config.json)         |
++---------------------------+
+        |
+        v
++---------------------------+
+| Determine Load Type       |
+| (Full or Incremental)     |
++---------------------------+
+        |
+        v
++---------------------------+
+| Load Source Configuration  |
+| (db_config.json)          |
++---------------------------+
+        |
+        v
++---------------------------+
+| Construct Query           |
+| Based on Load Type        |
++---------------------------+
+        |
+        v
++---------------------------+
+| Connect to Source DB      |
+| Using JDBC                |
++---------------------------+
+        |
+        v
++---------------------------+
+| Read Data into DataFrame  |
++---------------------------+
+        |
+        v
++---------------------------+
+| Validate Data             |
+| (Using validation_rules)  |
++---------------------------+
+        |
+        v
++---------------------------+
+| Load Target Configuration  |
+| (s3_config.json)          |
++---------------------------+
+        |
+        v
++---------------------------+
+| Write Data to S3          |
+| in Specified Format       |
++---------------------------+
+        |
+        v
++---------------------------+
+| Log Information & Alerts   |
++---------------------------+
+        |
+        v
++-----------------+
+| End Job         |
++-----------------+
+Explanation of Steps
+Start Job: Initiates the data ingestion job.
+Load Job Configuration: Reads the job_config.json file, which contains the necessary configurations for the job, including source and target specifications.
+Determine Load Type: Checks whether the load type is a full load or incremental load based on user input.
+Load Source Configuration: Loads database connection details from db_config.json.
+Construct Query: Builds the SQL query based on the specified load type and source configurations, including any filters or fields to be selected.
+Connect to Source DB: Establishes a connection to the source database using JDBC with the provided credentials.
+Read Data into DataFrame: Executes the constructed SQL query to read the data into a Spark DataFrame.
+Validate Data: Validates the data read from the source against the rules specified in validation_rules.json.
+Load Target Configuration: Loads the target configuration from s3_config.json, which includes details about the S3 bucket and file format.
+Write Data to S3: Writes the validated DataFrame to the specified S3 bucket in the chosen format (e.g., Parquet).
+Log Information & Alerts: Logs any relevant information or alerts during the process using the configured logging and alerting mechanisms.
+End Job: Marks the completion of the data ingestion job.
+Visualization
+If you would like a graphical representation, here's a visual format:
+plaintext
+Copy code
+[Start Job]
+      |
+[Load Job Configuration]
+      |
+[Determine Load Type]
+      |
+[Load Source Configuration]
+      |
+[Construct Query]
+      |
+[Connect to Source DB]
+      |
+[Read Data into DataFrame]
+      |
+[Validate Data]
+      |
+[Load Target Configuration]
+      |
+[Write Data to S3]
+      |
+[Log Information & Alerts]
+      |
+[End Job]
